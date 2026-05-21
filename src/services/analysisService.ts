@@ -4,6 +4,11 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 
+const rgbToHex = (r: number, g: number, b: number): string => {
+  const toHex = (c: number) => c.toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+};
+
 /**
  * Runs a background scan of the canvas to identify who painted each correct pixel of the drawing.
  * Uses a throttled queue to call wplace.live's getPixel API (1 request per 200ms).
@@ -36,6 +41,7 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
 
   const wplaceApi = new WplaceAPI();
   const contributorCounts = new Map<string, number>();
+  const contributorColors = new Map<string, Map<string, number>>();
 
   try {
     const imageUrl = drawing.imageUrl;
@@ -101,7 +107,7 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
       }
     }
 
-    const correctPixelsToQuery: { tileX: number; tileY: number; pxOnTile: number; pyOnTile: number }[] = [];
+    const correctPixelsToQuery: { tileX: number; tileY: number; pxOnTile: number; pyOnTile: number; hexColor: string }[] = [];
 
     // Download each tile and compare pixels with the template
     for (const [key, tileInfo] of tilesMap.entries()) {
@@ -154,7 +160,8 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
             tileX,
             tileY,
             pxOnTile,
-            pyOnTile
+            pyOnTile,
+            hexColor: rgbToHex(tplR, tplG, tplB)
           });
         }
       }
@@ -175,21 +182,27 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
     // Query wplace.live API for each correct pixel with a 200ms delay between calls
     for (let i = 0; i < totalCorrect; i++) {
       const p = correctPixelsToQuery[i]!;
+      let username = 'Anonyme';
 
       try {
         const pixelRes = await wplaceApi.getPixel(p.tileX, p.tileY, p.pxOnTile, p.pyOnTile);
         if (pixelRes.ok) {
           const pixelData = pixelRes.value;
-          const username = pixelData.paintedBy?.name || 'Anonyme';
-          contributorCounts.set(username, (contributorCounts.get(username) || 0) + 1);
+          username = pixelData.paintedBy?.name || 'Anonyme';
         } else {
           console.error(`[Analysis] Error fetching pixel metadata:`, pixelRes.error);
-          contributorCounts.set('Anonyme', (contributorCounts.get('Anonyme') || 0) + 1);
         }
       } catch (err) {
         console.error(`[Analysis] Unexpected error fetching pixel:`, err);
-        contributorCounts.set('Anonyme', (contributorCounts.get('Anonyme') || 0) + 1);
       }
+
+      contributorCounts.set(username, (contributorCounts.get(username) || 0) + 1);
+
+      if (!contributorColors.has(username)) {
+        contributorColors.set(username, new Map<string, number>());
+      }
+      const userColors = contributorColors.get(username)!;
+      userColors.set(p.hexColor, (userColors.get(p.hexColor) || 0) + 1);
 
       // Update progress in the database every 5 pixels or at the end
       if ((i + 1) % 5 === 0 || i + 1 === totalCorrect) {
@@ -214,11 +227,16 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
         where: { drawingId },
       }),
       prisma.contributor.createMany({
-        data: Array.from(contributorCounts.entries()).map(([username, pixelCount]) => ({
-          drawingId,
-          username,
-          pixelCount,
-        })),
+        data: Array.from(contributorCounts.entries()).map(([username, pixelCount]) => {
+          const userColorsMap = contributorColors.get(username);
+          const colorsObj = userColorsMap ? Object.fromEntries(userColorsMap.entries()) : {};
+          return {
+            drawingId,
+            username,
+            pixelCount,
+            colors: colorsObj,
+          };
+        }),
       }),
     ]);
 
@@ -236,3 +254,229 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
     console.log(`[Analysis] Background contributor analysis finalized for drawing ${drawingId}`);
   }
 }
+
+/**
+ * Automatiquement synchronise la progression d'un dessin en téléchargeant ses tuiles
+ * de carte correspondantes et en comparant les pixels avec le modèle.
+ * Ne fait aucun appel getPixel individuel lourd.
+ */
+export async function syncDrawingProgress(drawingId: number): Promise<{ correctPixels: number; wrongPixels: number; message: string }> {
+  const startTime = Date.now();
+  const drawing = await prisma.drawing.findUnique({
+    where: { id: drawingId },
+  });
+
+  if (!drawing) {
+    throw new Error(`Drawing ${drawingId} not found.`);
+  }
+
+  const wplaceApi = new WplaceAPI();
+  const imageUrl = drawing.imageUrl;
+  let tplBuffer: Buffer;
+
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    console.log(`[Sync] Fetching template image from remote URL: ${imageUrl}`);
+    const res = await fetch(imageUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch template image from URL ${imageUrl}: ${res.statusText}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    tplBuffer = Buffer.from(arrayBuffer);
+  } else {
+    const filepath = path.join(process.cwd(), 'public', imageUrl);
+    if (!fs.existsSync(filepath)) {
+      throw new Error(`Template image file not found at ${filepath}`);
+    }
+    tplBuffer = fs.readFileSync(filepath);
+  }
+
+  const metadata = await sharp(tplBuffer).metadata();
+  const tplW = metadata.width || 0;
+  const tplH = metadata.height || 0;
+
+  const rawInfo = await sharp(tplBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  
+  const tplData = rawInfo.data;
+
+  const drawAbsX = drawing.chunkX * 1000 + drawing.offsetX;
+  const drawAbsY = drawing.chunkY * 1000 + drawing.offsetY;
+
+  // Grouper les pixels à comparer par tuile wplace.live
+  const tilesMap = new Map<string, { tileX: number; tileY: number; pixels: { dx: number; dy: number; absX: number; absY: number }[] }>();
+
+  for (let dy = 0; dy < tplH; dy++) {
+    for (let dx = 0; dx < tplW; dx++) {
+      const ti = 4 * (dy * tplW + dx);
+      const alpha = tplData[ti + 3];
+
+      // Ignorer les pixels transparents du template
+      if (alpha !== undefined && alpha < 128) {
+        continue;
+      }
+
+      const absX = drawAbsX + dx;
+      const absY = drawAbsY + dy;
+
+      const tileX = Math.floor(absX / 1000);
+      const tileY = Math.floor(absY / 1000);
+      const key = `${tileX},${tileY}`;
+
+      if (!tilesMap.has(key)) {
+        tilesMap.set(key, { tileX, tileY, pixels: [] });
+      }
+
+      tilesMap.get(key)!.pixels.push({ dx, dy, absX, absY });
+    }
+  }
+
+  let correctPixels = 0;
+  let wrongPixels = 0;
+  const colorCorrects = new Map<string, number>();
+
+  // Note: rgbToHex is defined at the module level
+
+  // Parcourir chaque tuile, la télécharger et comparer ses pixels avec le template
+  for (const [key, tileInfo] of tilesMap.entries()) {
+    const { tileX, tileY, pixels } = tileInfo;
+    console.log(`[Sync] Downloading tile [${tileX}, ${tileY}] containing ${pixels.length} pixels to check`);
+
+    const tileRes = await wplaceApi.getTile(tileX, tileY);
+    if (!tileRes.ok) {
+      console.error(`[Sync] Failed to download tile [${tileX}, ${tileY}]:`, tileRes.error);
+      continue;
+    }
+
+    const png = tileRes.value;
+    if (!png) {
+      console.log(`[Sync] Tile [${tileX}, ${tileY}] is empty (404)`);
+      continue;
+    }
+
+    const tileW = png.width;
+    const tileH = png.height;
+
+    for (const p of pixels) {
+      const pxOnTile = p.absX - tileX * 1000;
+      const pyOnTile = p.absY - tileY * 1000;
+
+      if (pxOnTile < 0 || pyOnTile < 0 || pxOnTile >= tileW || pyOnTile >= tileH) {
+        continue;
+      }
+
+      const gi = 4 * (pyOnTile * tileW + pxOnTile);
+      const tileR = png.data[gi];
+      const tileG = png.data[gi + 1];
+      const tileB = png.data[gi + 2];
+      const tileA = png.data[gi + 3];
+
+      // Ignorer si le pixel n'est pas encore posé sur la carte (transparent)
+      if (tileA === 0) {
+        continue;
+      }
+
+      const ti = 4 * (p.dy * tplW + p.dx);
+      const tplR = tplData[ti];
+      const tplG = tplData[ti + 1];
+      const tplB = tplData[ti + 2];
+
+      const hex = rgbToHex(tplR, tplG, tplB);
+
+      // Comparer les couleurs
+      if (tplR === tileR && tplG === tileG && tplB === tileB) {
+        correctPixels++;
+        colorCorrects.set(hex, (colorCorrects.get(hex) || 0) + 1);
+      } else {
+        wrongPixels++;
+      }
+    }
+  }
+
+  // Récupérer le dernier enregistrement pour comparer et logguer les modifications
+  const lastProgress = await prisma.progress.findFirst({
+    where: { drawingId },
+    orderBy: { timestamp: 'desc' }
+  });
+
+  if (lastProgress) {
+    const diffCorrect = correctPixels - lastProgress.correctPixels;
+    const diffWrong = wrongPixels - lastProgress.wrongPixels;
+    if (diffCorrect !== 0 || diffWrong !== 0) {
+      console.log(
+        `[Sync] 📢 MODIFICATION DÉTECTÉE pour "${drawing.name}" : ` +
+        `Pixels corrects : ${lastProgress.correctPixels} → ${correctPixels} (${diffCorrect >= 0 ? '+' : ''}${diffCorrect}) | ` +
+        `Pixels incorrects : ${lastProgress.wrongPixels} → ${wrongPixels} (${diffWrong >= 0 ? '+' : ''}${diffWrong})`
+      );
+    } else {
+      console.log(`[Sync] Pas de modification détectée pour "${drawing.name}".`);
+    }
+  } else {
+    console.log(`[Sync] Première synchronisation pour "${drawing.name}".`);
+  }
+
+  // Créer l'enregistrement d'historique de progression
+  const progress = await prisma.progress.create({
+    data: {
+      drawingId,
+      correctPixels,
+      wrongPixels
+    }
+  });
+
+  // Gestion des dates de début et fin automatiques
+  const updateData: { startedAt?: Date; completedAt?: Date | null } = {};
+
+  if (correctPixels > 0 && drawing.startedAt === null) {
+    updateData.startedAt = new Date();
+  }
+
+  if (correctPixels >= drawing.totalPixels) {
+    if (drawing.completedAt === null) {
+      updateData.completedAt = new Date();
+    }
+  } else {
+    if (drawing.completedAt !== null) {
+      updateData.completedAt = null;
+    }
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    await prisma.drawing.update({
+      where: { id: drawingId },
+      data: updateData
+    });
+  }
+
+  // Mettre à jour les stats par couleur
+  for (const [hex, count] of colorCorrects.entries()) {
+    await prisma.colorStat.updateMany({
+      where: { drawingId, hexColor: hex },
+      data: { correctCount: count }
+    });
+  }
+
+  // Réinitialiser à 0 les couleurs qui n'ont aucun pixel correct actuellement
+  const allColorStats = await prisma.colorStat.findMany({
+    where: { drawingId }
+  });
+  for (const stat of allColorStats) {
+    if (!colorCorrects.has(stat.hexColor)) {
+      await prisma.colorStat.update({
+        where: { id: stat.id },
+        data: { correctCount: 0 }
+      });
+    }
+  }
+
+  const duration = Date.now() - startTime;
+  const percent = ((correctPixels / drawing.totalPixels) * 100).toFixed(2);
+  const remaining = drawing.totalPixels - correctPixels;
+  const message = `Dessin "${drawing.name}" : ${correctPixels}/${drawing.totalPixels} pixels corrects (${percent}%). Reste à placer : ${remaining} pixels. Erreurs : ${wrongPixels}. (Durée : ${duration}ms)`;
+
+  console.log(`[Sync] Finished progress sync for drawing "${drawing.name}": ${message}`);
+
+  return { correctPixels, wrongPixels, message };
+}
+

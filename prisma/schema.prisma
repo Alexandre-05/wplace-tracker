@@ -37,6 +37,7 @@ model Contributor {
   drawingId  Int
   username   String
   pixelCount Int
+  colors     Json?
   drawing    Drawing @relation(fields: [drawingId], references: [id])
 
   @@unique([drawingId, username])

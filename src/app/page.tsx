@@ -21,8 +21,18 @@ import {
   Pencil,
   Check,
   Users,
-  Trophy
+  Trophy,
+  BarChart2
 } from 'lucide-react';
+import { 
+  ResponsiveContainer, 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  Tooltip as RechartsTooltip, 
+  Legend 
+} from 'recharts';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -34,6 +44,7 @@ import {
   DialogTitle, 
   DialogFooter 
 } from "@/components/ui/dialog";
+import colorNames from '@/lib/colors.json';
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -84,9 +95,136 @@ const handleDownload = async (url: string, filename: string) => {
   }
 };
 
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    const activePayload = payload.filter((p: any) => p.value > 0);
+    if (activePayload.length === 0) return null;
+    
+    return (
+      <div className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] shadow-xl min-w-[140px]">
+        <p className="font-bold text-slate-200 mb-1.5 border-b border-slate-900 pb-1">{label}</p>
+        <div className="space-y-1">
+          {activePayload.map((pld: any) => (
+            <div key={pld.name} className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-1.5">
+                <div className="h-1.5 w-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: pld.fill || pld.color }} />
+                <span className="text-slate-400 font-medium">{pld.name}</span>
+              </div>
+              <span className="font-mono font-bold text-slate-200">{pld.value} px</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
 export default function Dashboard() {
-  const { data: drawings, error, mutate } = useSWR('/api/drawings', fetcher, { refreshInterval: 1500 });
+  // Details Modal state (déclaré en premier pour être disponible dans le hook useSWR)
+  const [detailDrawing, setDetailDrawing] = useState<any | null>(null);
   
+  const { data: drawings, error, mutate } = useSWR('/api/drawings', fetcher, { 
+    refreshInterval: 60000 
+  });
+  
+  // États pour le minuteur circulaire et les logs de changements
+  const [secsLeft, setSecsLeft] = useState(300);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string | null>(null);
+  const prevDrawingsRef = useRef<any[] | null>(null);
+
+  const getColorName = (hex: string) => {
+    const upperHex = hex.toUpperCase();
+    return (colorNames as Record<string, string>)[upperHex] || hex;
+  };
+
+  // Hook de détection et log en console des modifications de progression
+  React.useEffect(() => {
+    if (!drawings || !Array.isArray(drawings)) return;
+    
+    if (prevDrawingsRef.current) {
+      drawings.forEach((drawing: any) => {
+        const prevDrawing = prevDrawingsRef.current?.find((d: any) => d.id === drawing.id);
+        if (prevDrawing) {
+          const prevProgress = prevDrawing.progress?.[0];
+          const currentProgress = drawing.progress?.[0];
+          
+          const prevCorrect = prevProgress?.correctPixels || 0;
+          const currentCorrect = currentProgress?.correctPixels || 0;
+          
+          const prevWrong = prevProgress?.wrongPixels || 0;
+          const currentWrong = currentProgress?.wrongPixels || 0;
+          
+          if (prevCorrect !== currentCorrect || prevWrong !== currentWrong) {
+            const diffCorrect = currentCorrect - prevCorrect;
+            const diffWrong = currentWrong - prevWrong;
+            
+            console.log(
+              `%c[Wplace Tracker] Modification détectée pour "${drawing.name}" : %cCorrect: ${prevCorrect} → ${currentCorrect} (${diffCorrect >= 0 ? '+' : ''}${diffCorrect}) | Erreurs: ${prevWrong} → ${currentWrong} (${diffWrong >= 0 ? '+' : ''}${diffWrong})`,
+              'color: #3b82f6; font-weight: bold;',
+              'color: #10b981; font-weight: bold;'
+            );
+          }
+        }
+      });
+    }
+    
+    prevDrawingsRef.current = drawings;
+  }, [drawings]);
+
+  // Hook de compte à rebours circulaire toutes les 5 minutes avec déclenchement automatique
+  React.useEffect(() => {
+    if (isSyncing) return;
+
+    const timer = setInterval(() => {
+      setSecsLeft((prev) => {
+        if (prev <= 1) {
+          const runSequentialSync = async () => {
+            setIsSyncing(true);
+            const drawingsToSync = drawings && Array.isArray(drawings) ? drawings : [];
+            
+            if (drawingsToSync.length === 0) {
+              setSyncProgress("Aucun dessin à vérifier");
+              await new Promise(r => setTimeout(r, 1000));
+              setIsSyncing(false);
+              setSyncProgress(null);
+              return;
+            }
+
+            console.log("%c[Wplace Tracker] 🔄 Déclenchement automatique de la vérification séquentielle...", "color: #eab308; font-weight: bold;");
+            const startTime = Date.now();
+            
+            for (let i = 0; i < drawingsToSync.length; i++) {
+              const drawing = drawingsToSync[i];
+              setSyncProgress(`Vérification : ${drawing.name} (${i + 1}/${drawingsToSync.length})`);
+              
+              try {
+                const res = await fetch(`/api/cron/sync?drawingId=${drawing.id}`);
+                const data = await res.json();
+                console.log(`[Wplace Tracker] Synchro dessin "${drawing.name}" terminée :`, data);
+                await mutate();
+              } catch (err) {
+                console.error(`[Wplace Tracker] Erreur synchro dessin "${drawing.name}" :`, err);
+              }
+            } 
+            
+            const totalDuration = Date.now() - startTime;
+            console.log(`%c[Wplace Tracker] ✅ Vérification complète terminée en ${totalDuration}ms !`, "color: #10b981; font-weight: bold;");
+            setSyncProgress(null);
+            setIsSyncing(false);
+          };
+
+          runSequentialSync();
+          return 300;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isSyncing, drawings, mutate]);
+
   // Modal & Form states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [name, setName] = useState('');
@@ -99,14 +237,18 @@ export default function Dashboard() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   
-  // Details Modal state
-  const [detailDrawing, setDetailDrawing] = useState<any | null>(null);
   const [detailTab, setDetailTab] = useState<'colors' | 'contributors'>('colors');
   const [isTriggeringAnalysis, setIsTriggeringAnalysis] = useState(false);
+  const [showChart, setShowChart] = useState(false);
+  const [expandedContributor, setExpandedContributor] = useState<string | null>(null);
+  const [chartMousePos, setChartMousePos] = useState<{ x: number; y: number } | null>(null);
 
   const openDetailModal = (drawing: any) => {
     setDetailDrawing(drawing);
     setDetailTab('colors');
+    setShowChart(false);
+    setExpandedContributor(null);
+    setChartMousePos(null);
   };
   
   // Submission & Status states
@@ -431,6 +573,24 @@ export default function Dashboard() {
     ? drawings.find((d: any) => d.id === detailDrawing.id) || detailDrawing 
     : null;
 
+  // Calcul du jeu de données pour le graphique à barres empilées de Recharts
+  const allUniqueColors = new Set<string>();
+  const chartData = (activeDetailDrawing?.contributors || []).map((contrib: any) => {
+    const rawColors = contrib.colors;
+    const parsedColors = typeof rawColors === 'object' && rawColors !== null ? (rawColors as Record<string, number>) : {};
+    
+    const dataEntry: Record<string, any> = {
+      name: contrib.username,
+    };
+    
+    Object.entries(parsedColors).forEach(([color, count]) => {
+      allUniqueColors.add(color);
+      dataEntry[color] = count;
+    });
+    
+    return dataEntry;
+  });
+
   const sortedColorStats = activeDetailDrawing?.colorStats
     ? [...activeDetailDrawing.colorStats].sort((a: any, b: any) => {
         const remainingA = Math.max(0, a.pixelCount - (a.correctCount || 0));
@@ -463,7 +623,44 @@ export default function Dashboard() {
               Suivi d'avancement et colorimétrie des dessins en temps réel
             </p>
           </div>
-          <div className="flex flex-col sm:flex-row gap-2.5 w-full sm:w-auto">
+          <div className="flex flex-col sm:flex-row items-center gap-3.5 w-full sm:w-auto">
+            {/* Minuteur circulaire de compte à rebours */}
+            <div className="flex items-center gap-3 bg-slate-900/60 border border-slate-800/80 px-3.5 py-2 rounded-full shadow-lg backdrop-blur-md w-full sm:w-auto justify-center sm:justify-start" title="Temps restant avant la prochaine synchronisation automatique des pixels par le serveur">
+              <div className="relative flex items-center justify-center h-6 w-6 flex-shrink-0">
+                <svg className="absolute w-6 h-6 transform -rotate-90">
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9"
+                    className="stroke-slate-800"
+                    strokeWidth="2.5"
+                    fill="transparent"
+                  />
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9"
+                    className={`stroke-teal-500 transition-all ${isSyncing ? 'animate-pulse' : 'duration-1000 ease-linear'}`}
+                    strokeWidth="2.5"
+                    fill="transparent"
+                    strokeDasharray={56.54}
+                    strokeDashoffset={isSyncing ? 0 : 56.54 * (secsLeft / 300)}
+                  />
+                </svg>
+                <span className="text-[9px] font-bold font-mono text-slate-400">
+                  {isSyncing ? "..." : `${Math.floor(secsLeft / 60)}m`}
+                </span>
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="text-[9px] font-bold text-slate-500 font-mono tracking-wider uppercase leading-none">
+                  {isSyncing ? "Vérification" : "Prochaine synchro"}
+                </span>
+                <span className="text-[11px] font-bold text-teal-400 font-mono mt-0.5 leading-none">
+                  {isSyncing ? (syncProgress || "En cours...") : `dans ${Math.floor(secsLeft / 60)}m ${(secsLeft % 60).toString().padStart(2, '0')}s`}
+                </span>
+              </div>
+            </div>
+
             {isAdmin ? (
               <Button 
                 variant="outline" 
@@ -861,9 +1058,9 @@ export default function Dashboard() {
         </Dialog>
 
         {/* Details Dialog (Color Breakdown) */}
-        <Dialog open={!!activeDetailDrawing} onOpenChange={(open) => { if (!open) setDetailDrawing(null); }}>
+        <Dialog open={!!activeDetailDrawing} onOpenChange={(open) => { if (!open) { setDetailDrawing(null); setChartMousePos(null); } }}>
           {activeDetailDrawing && (
-            <DialogContent className="sm:max-w-[550px]">
+            <DialogContent className="sm:max-w-[850px] w-[95vw] max-h-[95vh] overflow-y-auto scrollbar-thin">
               <DialogHeader>
                 <DialogTitle className="text-lg font-bold text-slate-100">
                   Détails & Statistiques
@@ -967,8 +1164,8 @@ export default function Dashboard() {
                     </p>
                   </div>
 
-                  {/* Color list scroll area */}
-                  <div className="space-y-2.5 max-h-[250px] overflow-y-auto pr-1.5 mt-3 scrollbar-thin">
+                  {/* Grille de tuiles de couleurs compactes (sans défilement individuel) */}
+                  <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-3">
                     {sortedColorStats.map((color: any) => {
                       const correctCount = color.correctCount || 0;
                       const totalCount = color.pixelCount;
@@ -978,43 +1175,44 @@ export default function Dashboard() {
                       return (
                         <div 
                           key={color.id} 
-                          className="flex items-center gap-4 rounded-xl border border-slate-900 bg-slate-950/40 px-3.5 py-3 hover:border-slate-800 hover:bg-slate-950/70 transition-all duration-200"
+                          className="flex items-center gap-2.5 rounded-xl border border-slate-900 bg-slate-950/40 p-2 hover:border-slate-800 hover:bg-slate-950/60 transition-colors duration-100"
                         >
                           {/* Color Pill */}
                           <div 
-                            className="h-7 w-7 rounded-lg border border-white/20 shadow-inner flex-shrink-0"
+                            className="h-6 w-6 rounded-lg border border-white/10 flex-shrink-0 shadow-[inset_0_0_2px_rgba(0,0,0,0.4)]"
                             style={{ 
-                              backgroundColor: color.hexColor,
-                              boxShadow: 'inset 0 0 4px rgba(0, 0, 0, 0.4)' 
+                              backgroundColor: color.hexColor
                             }}
+                            title={color.hexColor}
                           />
 
-                          {/* Info & Progress bar */}
-                          <div className="flex-1 min-w-0 space-y-1.5">
-                            <div className="text-xs font-mono font-bold text-slate-300">
-                              {color.hexColor}
+                          {/* Info Column */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1 leading-none">
+                              <span className="text-[11px] font-bold text-slate-300 truncate" title={getColorName(color.hexColor)}>
+                                {getColorName(color.hexColor)}
+                              </span>
+                              <span className={`text-[10px] font-bold font-mono flex-shrink-0 ${
+                                remainingCount > 0 ? 'text-slate-400' : 'text-emerald-400'
+                              }`}>
+                                {remainingCount > 0 ? `+${remainingCount}` : '✓'}
+                              </span>
                             </div>
-                            {/* Custom visual progress bar with exact color */}
-                            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-950 border border-slate-900">
-                              <div 
-                                className="h-full rounded-full transition-all duration-300"
-                                style={{ 
-                                  width: `${percent}%`,
-                                  backgroundColor: color.hexColor
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Remaining count and fraction ratios */}
-                          <div className="text-right flex-shrink-0 space-y-0.5">
-                            <div className={`text-sm font-extrabold font-mono ${
-                              remainingCount > 0 ? 'text-slate-200' : 'text-emerald-400'
-                            }`}>
-                              {remainingCount > 0 ? `+${remainingCount}` : 'Terminé ! 🎉'}
-                            </div>
-                            <div className="text-[10px] font-mono text-slate-500">
-                              {correctCount} / {totalCount} ({percent.toFixed(0)}%)
+                            
+                            {/* Visual Progress details in micro format */}
+                            <div className="mt-1 flex items-center gap-1.5 leading-none">
+                              <div className="h-1 flex-1 overflow-hidden rounded-full bg-slate-900 border border-slate-950">
+                                <div 
+                                  className="h-full rounded-full transition-all duration-300"
+                                  style={{ 
+                                    width: `${percent}%`,
+                                    backgroundColor: color.hexColor
+                                  }}
+                                />
+                              </div>
+                              <span className="text-[8px] font-mono text-slate-500 leading-none">
+                                {percent.toFixed(0)}%
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -1024,52 +1222,121 @@ export default function Dashboard() {
                 </>
               ) : (
                 <div className="space-y-3">
-                  {/* Header with last run and update button */}
-                  <div className="flex items-center justify-between text-xs bg-slate-950/30 border border-slate-900 rounded-xl p-3">
-                    <div className="space-y-0.5">
-                      <div className="font-bold text-slate-500 uppercase tracking-wider text-[9px]">Dernier scan</div>
-                      <div className="font-mono text-slate-300 text-xs">
-                        {activeDetailDrawing.analysisLastRun ? formatDate(activeDetailDrawing.analysisLastRun) : 'Jamais analysé'}
+                  {/* Header and Toggle Chart Button Row */}
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    {/* Header with last run and update button */}
+                    <div className="flex-1 flex items-center justify-between text-xs bg-slate-950/30 border border-slate-900 rounded-xl p-3">
+                      <div className="space-y-0.5">
+                        <div className="font-bold text-slate-500 uppercase tracking-wider text-[9px]">Dernier scan</div>
+                        <div className="font-mono text-slate-300 text-xs">
+                          {activeDetailDrawing.analysisLastRun ? formatDate(activeDetailDrawing.analysisLastRun) : 'Jamais analysé'}
+                        </div>
                       </div>
+                      
+                      {isAdmin ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleTriggerAnalysis(activeDetailDrawing.id)}
+                          disabled={activeDetailDrawing.analysisInProgress || isTriggeringAnalysis}
+                          className="h-8 border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-xs font-bold text-slate-200"
+                        >
+                          {isTriggeringAnalysis ? (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+                              Lancement...
+                            </>
+                          ) : activeDetailDrawing.analysisInProgress ? (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+                              Scan en cours...
+                            </>
+                          ) : (
+                            'Mettre à jour'
+                          )}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled
+                          className="h-8 border-slate-900 bg-slate-950/20 text-xs font-semibold text-slate-500 cursor-not-allowed flex items-center gap-1.5"
+                        >
+                          <Lock className="h-3 w-3 text-slate-600" />
+                          Mettre à jour (Admin)
+                        </Button>
+                      )}
                     </div>
-                    
-                    {isAdmin ? (
+
+                    {/* Chart toggle button */}
+                    {activeDetailDrawing.contributors && activeDetailDrawing.contributors.length > 0 && (
                       <Button
-                        size="sm"
+                        onClick={() => setShowChart(!showChart)}
                         variant="outline"
-                        onClick={() => handleTriggerAnalysis(activeDetailDrawing.id)}
-                        disabled={activeDetailDrawing.analysisInProgress || isTriggeringAnalysis}
-                        className="h-8 border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-xs font-bold text-slate-200"
+                        className="border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-xs font-bold text-slate-200 flex items-center justify-center gap-1.5 h-auto py-2.5 sm:py-0 px-4 rounded-xl shadow-lg hover:text-white"
                       >
-                        {isTriggeringAnalysis ? (
-                          <>
-                            <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
-                            Lancement...
-                          </>
-                        ) : activeDetailDrawing.analysisInProgress ? (
-                          <>
-                            <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
-                            Scan en cours...
-                          </>
-                        ) : (
-                          'Mettre à jour'
-                        )}
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled
-                        className="h-8 border-slate-900 bg-slate-950/20 text-xs font-semibold text-slate-500 cursor-not-allowed flex items-center gap-1.5"
-                      >
-                        <Lock className="h-3 w-3 text-slate-600" />
-                        Mettre à jour (Admin)
+                        <BarChart2 className="h-4 w-4 text-teal-400" />
+                        {showChart ? 'Masquer le graphique' : 'Afficher le graphique'}
                       </Button>
                     )}
                   </div>
 
+                  {/* Dynamic Stacked Bar Chart */}
+                  {showChart && activeDetailDrawing.contributors && activeDetailDrawing.contributors.length > 0 && (
+                    <div className="rounded-xl border border-slate-900 bg-slate-950/60 p-4 shadow-inner animate-[fadeIn_0.2s_ease-out]">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Répartition des couleurs par contributeur</div>
+                      <div className="h-64 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart 
+                            data={chartData} 
+                            margin={{ top: 10, right: 10, left: -20, bottom: 5 }}
+                            onMouseMove={(state: any) => {
+                              if (state && state.chartX !== undefined && state.chartY !== undefined) {
+                                setChartMousePos({ x: state.chartX + 15, y: state.chartY - 10 });
+                              } else {
+                                setChartMousePos(null);
+                              }
+                            }}
+                            onMouseLeave={() => setChartMousePos(null)}
+                          >
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="#64748b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                            />
+                            <YAxis 
+                              stroke="#64748b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                              allowDecimals={false}
+                            />
+                            <RechartsTooltip 
+                              content={<CustomTooltip />}
+                              cursor={false}
+                              position={chartMousePos || undefined}
+                            />
+                            {Array.from(allUniqueColors).map((color) => (
+                              <Bar 
+                                key={color} 
+                                dataKey={color} 
+                                stackId="a" 
+                                fill={color} 
+                                name={getColorName(color)} 
+                                radius={[2, 2, 0, 0]}
+                                activeBar={false}
+                              />
+                            ))}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Leaderboard scroll area */}
-                  <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1.5 scrollbar-thin">
+                  <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1.5 scrollbar-thin">
                     {!activeDetailDrawing.contributors || activeDetailDrawing.contributors.length === 0 ? (
                       <div className="text-center py-8 rounded-xl border border-dashed border-slate-900 bg-slate-950/20 flex flex-col items-center justify-center p-4">
                         <p className="text-xs text-slate-500 mb-3">Aucune statistique disponible pour ce dessin.</p>
@@ -1121,28 +1388,75 @@ export default function Dashboard() {
                           borderStyle = 'border-amber-700/20 bg-amber-700/5 hover:border-amber-700/30';
                         }
 
+                        const isExpanded = expandedContributor === contrib.username;
+                        const rawColors = contrib.colors;
+                        const parsedColors = typeof rawColors === 'object' && rawColors !== null ? (rawColors as Record<string, number>) : {};
+                        const hasColors = Object.keys(parsedColors).length > 0;
+
                         return (
                           <div 
                             key={contrib.id} 
-                            className={`flex items-center justify-between rounded-xl border px-3.5 py-2.5 hover:bg-slate-950/60 transition-all duration-200 ${borderStyle}`}
+                            onClick={() => {
+                              if (hasColors) {
+                                setExpandedContributor(isExpanded ? null : contrib.username);
+                              }
+                            }}
+                            className={`flex flex-col rounded-xl border transition-all duration-250 ${hasColors ? 'cursor-pointer select-none' : ''} ${borderStyle}`}
                           >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {medal ? (
-                                <span className="text-base leading-none">{medal}</span>
-                              ) : (
-                                <span className="text-[10px] font-mono font-bold text-slate-500 w-5 text-center">#{idx + 1}</span>
-                              )}
-                              <span className={`text-xs font-bold truncate ${rankColor}`}>
-                                {contrib.username}
-                              </span>
+                            {/* Header Row */}
+                            <div className="flex items-center justify-between px-3.5 py-2.5">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {medal ? (
+                                  <span className="text-base leading-none">{medal}</span>
+                                ) : (
+                                  <span className="text-[10px] font-mono font-bold text-slate-500 w-5 text-center">#{idx + 1}</span>
+                                )}
+                                <span className={`text-xs font-bold truncate ${rankColor}`}>
+                                  {contrib.username}
+                                </span>
+                              </div>
+                              
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <div className="text-right">
+                                  <span className="text-xs font-extrabold font-mono text-slate-200">
+                                    {contrib.pixelCount}
+                                  </span>
+                                  <span className="text-[10px] text-slate-500 ml-1">pixel{contrib.pixelCount > 1 ? 's' : ''}</span>
+                                </div>
+                                {hasColors && (
+                                  <span className={`text-[10px] text-slate-500 font-bold transition-transform duration-250 ${isExpanded ? 'rotate-180 text-blue-400' : ''}`}>
+                                    ▼
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            
-                            <div className="text-right flex-shrink-0">
-                              <span className="text-xs font-extrabold font-mono text-slate-200">
-                                {contrib.pixelCount}
-                              </span>
-                              <span className="text-[10px] text-slate-500 ml-1">pixel{contrib.pixelCount > 1 ? 's' : ''}</span>
-                            </div>
+
+                            {/* Collapsible Color Breakdown */}
+                            {isExpanded && hasColors && (
+                              <div 
+                                onClick={(e) => e.stopPropagation()} // Prevent clicking the breakdown from collapsing the card
+                                className="px-3.5 pb-3 pt-1.5 border-t border-slate-900/50 bg-slate-950/25 rounded-b-xl flex flex-wrap gap-2 animate-[fadeIn_0.15s_ease-out]"
+                              >
+                                {Object.entries(parsedColors).map(([colorHex, count]) => (
+                                  <div 
+                                    key={colorHex}
+                                    className="flex items-center gap-1.5 rounded-lg border border-slate-900/80 bg-slate-950/60 px-2 py-1 shadow-inner hover:border-slate-800/80 transition-colors"
+                                  >
+                                    <div 
+                                      className="h-3 w-3 rounded-full border border-white/10 flex-shrink-0"
+                                      style={{ backgroundColor: colorHex }}
+                                      title={colorHex}
+                                    />
+                                    <span className="text-[10px] font-bold text-slate-300">
+                                      {getColorName(colorHex)}
+                                    </span>
+                                    <span className="text-[9px] font-extrabold font-mono text-teal-400 ml-1 bg-teal-500/10 px-1.5 py-0.5 rounded-md">
+                                      {count}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })
@@ -1154,7 +1468,7 @@ export default function Dashboard() {
               <DialogFooter className="mt-4">
                 <Button 
                   type="button" 
-                  onClick={() => setDetailDrawing(null)}
+                  onClick={() => { setDetailDrawing(null); setChartMousePos(null); }}
                   className="w-full"
                 >
                   Fermer
