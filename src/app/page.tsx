@@ -120,6 +120,60 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
+const ContributorChart = ({ chartData, allUniqueColors, getColorName }: any) => {
+  const [chartMousePos, setChartMousePos] = useState<{ x: number; y: number } | null>(null);
+  
+  return (
+    <div className="h-64 w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart 
+          data={chartData} 
+          margin={{ top: 10, right: 10, left: -20, bottom: 5 }}
+          onMouseMove={(state: any) => {
+            if (state && state.chartX !== undefined && state.chartY !== undefined) {
+              setChartMousePos({ x: state.chartX + 15, y: state.chartY - 10 });
+            } else {
+              setChartMousePos(null);
+            }
+          }}
+          onMouseLeave={() => setChartMousePos(null)}
+        >
+          <XAxis 
+            dataKey="name" 
+            stroke="#64748b" 
+            fontSize={9} 
+            tickLine={false} 
+            axisLine={false}
+          />
+          <YAxis 
+            stroke="#64748b" 
+            fontSize={9} 
+            tickLine={false} 
+            axisLine={false}
+            allowDecimals={false}
+          />
+          <RechartsTooltip 
+            content={<CustomTooltip />}
+            cursor={false}
+            position={chartMousePos || undefined}
+          />
+          {Array.from(allUniqueColors).map((color: any) => (
+            <Bar 
+              key={color} 
+              dataKey={color} 
+              stackId="a" 
+              fill={color} 
+              name={getColorName(color)} 
+              radius={[2, 2, 0, 0]}
+              activeBar={false}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+};
+
 export default function Dashboard() {
   // Details Modal state (déclaré en premier pour être disponible dans le hook useSWR)
   const [detailDrawing, setDetailDrawing] = useState<any | null>(null);
@@ -241,15 +295,26 @@ export default function Dashboard() {
   const [isTriggeringAnalysis, setIsTriggeringAnalysis] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [expandedContributor, setExpandedContributor] = useState<string | null>(null);
-  const [chartMousePos, setChartMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [isDetailReady, setIsDetailReady] = useState(false);
 
   const openDetailModal = (drawing: any) => {
+    setIsDetailReady(false);
     setDetailDrawing(drawing);
     setDetailTab('colors');
     setShowChart(false);
     setExpandedContributor(null);
-    setChartMousePos(null);
   };
+
+  React.useEffect(() => {
+    if (detailDrawing) {
+      const timer = setTimeout(() => {
+        setIsDetailReady(true);
+      }, 200);
+      return () => clearTimeout(timer);
+    } else {
+      setIsDetailReady(false);
+    }
+  }, [detailDrawing]);
   
   // Submission & Status states
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1058,7 +1123,7 @@ export default function Dashboard() {
         </Dialog>
 
         {/* Details Dialog (Color Breakdown) */}
-        <Dialog open={!!activeDetailDrawing} onOpenChange={(open) => { if (!open) { setDetailDrawing(null); setChartMousePos(null); } }}>
+        <Dialog open={!!activeDetailDrawing} onOpenChange={(open) => { if (!open) setDetailDrawing(null); }}>
           {activeDetailDrawing && (
             <DialogContent className="sm:max-w-[850px] w-[95vw] max-h-[95vh] overflow-y-auto scrollbar-thin">
               <DialogHeader>
@@ -1152,7 +1217,31 @@ export default function Dashboard() {
               )}
 
               {/* Tabs Content */}
-              {detailTab === 'colors' ? (
+              {!isDetailReady ? (
+                <div className="space-y-3">
+                  <div>
+                    <div className="h-3.5 w-48 bg-slate-800/50 rounded animate-pulse mb-1.5" />
+                    <div className="h-2.5 w-72 bg-slate-900/50 rounded animate-pulse" />
+                  </div>
+                  <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-3">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <div 
+                        key={i} 
+                        className="flex items-center gap-2.5 rounded-xl border border-slate-900 bg-slate-950/20 p-2 animate-pulse"
+                      >
+                        {/* Fake Color Pill */}
+                        <div className="h-6 w-6 rounded-lg bg-slate-800/50 flex-shrink-0" />
+                        
+                        {/* Fake Info Column */}
+                        <div className="flex-1 space-y-1.5">
+                          <div className="h-2.5 w-16 bg-slate-800/40 rounded" />
+                          <div className="h-1.5 w-12 bg-slate-800/20 rounded" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : detailTab === 'colors' ? (
                 <>
                   {/* Sub-header for lists */}
                   <div>
@@ -1285,53 +1374,11 @@ export default function Dashboard() {
                   {showChart && activeDetailDrawing.contributors && activeDetailDrawing.contributors.length > 0 && (
                     <div className="rounded-xl border border-slate-900 bg-slate-950/60 p-4 shadow-inner animate-[fadeIn_0.2s_ease-out]">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-3">Répartition des couleurs par contributeur</div>
-                      <div className="h-64 w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart 
-                            data={chartData} 
-                            margin={{ top: 10, right: 10, left: -20, bottom: 5 }}
-                            onMouseMove={(state: any) => {
-                              if (state && state.chartX !== undefined && state.chartY !== undefined) {
-                                setChartMousePos({ x: state.chartX + 15, y: state.chartY - 10 });
-                              } else {
-                                setChartMousePos(null);
-                              }
-                            }}
-                            onMouseLeave={() => setChartMousePos(null)}
-                          >
-                            <XAxis 
-                              dataKey="name" 
-                              stroke="#64748b" 
-                              fontSize={9} 
-                              tickLine={false} 
-                              axisLine={false}
-                            />
-                            <YAxis 
-                              stroke="#64748b" 
-                              fontSize={9} 
-                              tickLine={false} 
-                              axisLine={false}
-                              allowDecimals={false}
-                            />
-                            <RechartsTooltip 
-                              content={<CustomTooltip />}
-                              cursor={false}
-                              position={chartMousePos || undefined}
-                            />
-                            {Array.from(allUniqueColors).map((color) => (
-                              <Bar 
-                                key={color} 
-                                dataKey={color} 
-                                stackId="a" 
-                                fill={color} 
-                                name={getColorName(color)} 
-                                radius={[2, 2, 0, 0]}
-                                activeBar={false}
-                              />
-                            ))}
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
+                      <ContributorChart 
+                        chartData={chartData} 
+                        allUniqueColors={allUniqueColors} 
+                        getColorName={getColorName} 
+                      />
                     </div>
                   )}
 
@@ -1468,7 +1515,7 @@ export default function Dashboard() {
               <DialogFooter className="mt-4">
                 <Button 
                   type="button" 
-                  onClick={() => { setDetailDrawing(null); setChartMousePos(null); }}
+                  onClick={() => setDetailDrawing(null)}
                   className="w-full"
                 >
                   Fermer
