@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Wplace Tracker (Backend Sync)
 // @namespace    http://tampermonkey.net/
-// @version      4.2
+// @version      4.3
 // @description  Track drawing progress via tile fetch - multi-tile support
 // @author       Antigravity
 // @match        *://*.wplace.live/*
@@ -20,6 +20,13 @@
 
     const CHUNK_SIZE = 1000;
     const TILE_URL_REGEX = /\/tiles\/(-?\d+)\/(-?\d+)\.png/;
+
+    const DEBUG = false; // Mettez à true pour activer les logs détaillés de développement
+    function log(...args) {
+        if (DEBUG) {
+            console.log(...args);
+        }
+    }
 
     // Initialisation dynamique des configurations
     function getBackendUrl() {
@@ -110,7 +117,7 @@
                         ctx.drawImage(img, 0, 0);
                         templateCache[drawing.id] = ctx.getImageData(0, 0, img.width, img.height);
                         URL.revokeObjectURL(url);
-                        console.log(`[Wplace Tracker] ✅ Template "${drawing.name}" chargé (${img.width}x${img.height})`);
+                        log(`[Wplace Tracker] ✅ Template "${drawing.name}" chargé (${img.width}x${img.height})`);
                         resolve(templateCache[drawing.id]);
                     };
                     img.onerror = () => { URL.revokeObjectURL(url); reject('Decode error'); };
@@ -136,7 +143,7 @@
             onload: r => {
                 if (r.status === 201) {
                     const resp = JSON.parse(r.responseText);
-                    console.log(`[Wplace Tracker] 📊 ${resp.message}`);
+                    log(`[Wplace Tracker] 📊 ${resp.message}`);
                 } else if (r.status === 401) {
                     console.error("[Wplace Tracker] ❌ Clé d'API invalide. Vous pouvez la reconfigurer dans le menu de Tampermonkey.");
                     GM_setValue('TRACKER_API_KEY', ''); // reset to trigger prompt next time
@@ -148,8 +155,129 @@
     }
 
     // ─────────────────────────────────────────────
-    // Analyse d'une tuile (gestion multi-tuiles)
+    // Web Worker & Gestion d'analyse optimisée (Thread-Safe v4.3)
     // ─────────────────────────────────────────────
+    let analysisWorker = null;
+    let taskIdCounter = 0;
+    const pendingTasks = new Map();
+
+    function getOrCreateWorker() {
+        if (!analysisWorker) {
+            const workerCode = `
+                self.onmessage = function(e) {
+                    const { taskId, drawing, tplData, tileData, tileW, tileH, CHUNK_SIZE, ratio, tileStartX, tileStartY, overlapAbsX1, overlapAbsY1, cmpW, cmpH } = e.data;
+                    
+                    const tplW = drawing.width;
+                    const tplH = drawing.height;
+                    
+                    let correct = 0, wrong = 0, opaque = 0;
+                    const colorCounts = {};
+                    
+                    const rgbToHex = (r, g, b) => {
+                        const toHex = c => c.toString(16).padStart(2, '0');
+                        return "#" + toHex(r) + toHex(g) + toHex(b);
+                    };
+
+                    for (let dy = 0; dy < cmpH; dy++) {
+                        for (let dx = 0; dx < cmpW; dx++) {
+                            // Lecture dans le template
+                            const tplX = (overlapAbsX1 - (drawing.chunkX * CHUNK_SIZE + drawing.offsetX)) + dx;
+                            const tplY = (overlapAbsY1 - (drawing.chunkY * CHUNK_SIZE + drawing.offsetY)) + dy;
+                            
+                            const ti = 4 * (tplY * tplW + tplX);
+                            if (tplData[ti + 3] < 128) continue; // transparent
+                            opaque++;
+
+                            // Lecture dans la tuile
+                            const tileX = tileStartX + Math.round(dx * ratio);
+                            const tileY = tileStartY + Math.round(dy * ratio);
+                            if (tileX < 0 || tileY < 0 || tileX >= tileW || tileY >= tileH) continue;
+                            const gi = 4 * (tileY * tileW + tileX);
+
+                            const tileAlpha = tileData[gi + 3];
+                            if (tileAlpha > 0) { // N'analyser que si le pixel est dessiné sur le jeu
+                                const isMatch = tplData[ti]   === tileData[gi]   &&
+                                                tplData[ti+1] === tileData[gi+1] &&
+                                                tplData[ti+2] === tileData[gi+2];
+                                
+                                const hex = rgbToHex(tplData[ti], tplData[ti+1], tplData[ti+2]).toUpperCase();
+                                if (!colorCounts[hex]) {
+                                    colorCounts[hex] = 0;
+                                }
+
+                                if (isMatch) {
+                                    correct++;
+                                    colorCounts[hex]++;
+                                } else {
+                                    wrong++;
+                                }
+                            }
+                        }
+                    }
+                    
+                    self.postMessage({ taskId, drawingId: drawing.id, correct, wrong, opaque, colorCounts });
+                };
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            analysisWorker = new Worker(URL.createObjectURL(blob));
+            
+            // Un seul gestionnaire d'événements persistant pour router les messages par taskId
+            analysisWorker.onmessage = (event) => {
+                const { taskId } = event.data;
+                const resolve = pendingTasks.get(taskId);
+                if (resolve) {
+                    pendingTasks.delete(taskId);
+                    resolve(event.data);
+                }
+            };
+        }
+        return analysisWorker;
+    }
+
+    // Gestion du Debounce & Queue d'analyse sans exécution concurrente
+    let analysisTimeout = null;
+    let isProcessingQueue = false;
+    const tileQueue = {};
+
+    function queueTileForAnalysis(tileChunkX, tileChunkY, blob) {
+        const key = `${tileChunkX},${tileChunkY}`;
+        tileQueue[key] = blob;
+
+        if (analysisTimeout) clearTimeout(analysisTimeout);
+        analysisTimeout = setTimeout(() => {
+            processQueue();
+        }, 300); // 300ms de silence requis avant l'analyse
+    }
+
+    async function processQueue() {
+        if (isProcessingQueue) {
+            // Si déjà en cours, reprogrammer une vérification très rapide
+            if (analysisTimeout) clearTimeout(analysisTimeout);
+            analysisTimeout = setTimeout(processQueue, 100);
+            return;
+        }
+
+        const keys = Object.keys(tileQueue);
+        if (keys.length === 0) return;
+
+        isProcessingQueue = true;
+        try {
+            log(`[Wplace Tracker] 🚀 Analyse de ${keys.length} tuile(s) en arrière-plan via Web Worker...`);
+            for (const key of keys) {
+                const blob = tileQueue[key];
+                if (!blob) continue;
+                delete tileQueue[key];
+
+                const [tileChunkX, tileChunkY] = key.split(',').map(Number);
+                await analyzeTile(tileChunkX, tileChunkY, blob);
+            }
+        } catch (e) {
+            console.error('[Wplace Tracker] Erreur lors du traitement de la file d\'attente:', e);
+        } finally {
+            isProcessingQueue = false;
+        }
+    }
+
     async function analyzeTile(tileChunkX, tileChunkY, blob) {
         const tileAbsX = tileChunkX * CHUNK_SIZE;
         const tileAbsY = tileChunkY * CHUNK_SIZE;
@@ -165,8 +293,6 @@
         });
 
         if (matching.length === 0) return;
-
-        console.log(`[Wplace Tracker] 🔎 Tuile [${tileChunkX},${tileChunkY}] → ${matching.length} dessin(s) en chevauchement`);
 
         const url = URL.createObjectURL(blob);
         let tileImageData, tileW, tileH;
@@ -187,7 +313,7 @@
                 img.src = url;
             });
         } catch (e) {
-            console.warn('[Wplace Tracker] Impossible de décoder la tuile:', e);
+            log('[Wplace Tracker] Impossible de décoder la tuile:', e);
             return;
         } finally {
             URL.revokeObjectURL(url);
@@ -224,59 +350,35 @@
             const cmpW = overlapAbsX2 - overlapAbsX1;
             const cmpH = overlapAbsY2 - overlapAbsY1;
 
-            let correct = 0, wrong = 0, opaque = 0;
-
-            const rgbToHex = (r, g, b) => {
-                const toHex = c => c.toString(16).padStart(2, '0');
-                return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
-            };
-
             const tileKey = `${tileChunkX},${tileChunkY}`;
+
+            // Calcul en arrière-plan de manière asynchrone et thread-safe
+            const taskId = taskIdCounter++;
+            const workerResult = await new Promise((resolve) => {
+                pendingTasks.set(taskId, resolve);
+                const worker = getOrCreateWorker();
+                worker.postMessage({
+                    taskId,
+                    drawing,
+                    tplData: tpl.data,
+                    tileData: tileImageData.data,
+                    tileW,
+                    tileH,
+                    CHUNK_SIZE,
+                    ratio,
+                    tileStartX,
+                    tileStartY,
+                    overlapAbsX1,
+                    overlapAbsY1,
+                    cmpW,
+                    cmpH
+                });
+            });
+
+            const { correct, wrong, opaque, colorCounts } = workerResult;
+
             if (!tileColorResults[drawing.id]) tileColorResults[drawing.id] = {};
-            tileColorResults[drawing.id][tileKey] = {};
-
-            for (let dy = 0; dy < cmpH; dy++) {
-                for (let dx = 0; dx < cmpW; dx++) {
-                    // Lecture dans le template
-                    const tplX = tplStartX + dx;
-                    const tplY = tplStartY + dy;
-                    const ti = 4 * (tplY * tplW + tplX);
-                    if (tpl.data[ti + 3] < 128) continue; // transparent
-                    opaque++;
-
-                    // Lecture dans la tuile
-                    const tileX = tileStartX + Math.round(dx * ratio);
-                    const tileY = tileStartY + Math.round(dy * ratio);
-                    if (tileX < 0 || tileY < 0 || tileX >= tileW || tileY >= tileH) continue;
-                    const gi = 4 * (tileY * tileW + tileX);
-
-                    const tileAlpha = tileImageData.data[gi + 3];
-                    if (tileAlpha > 0) { // N'analyser que si le pixel est dessiné sur le jeu
-                        const absX = overlapAbsX1 + dx;
-                        const absY = overlapAbsY1 + dy;
-                        const isMatch = tpl.data[ti]   === tileImageData.data[gi]   &&
-                                        tpl.data[ti+1] === tileImageData.data[gi+1] &&
-                                        tpl.data[ti+2] === tileImageData.data[gi+2];
-                        
-                        const tplRGB = `rgb(${tpl.data[ti]}, ${tpl.data[ti+1]}, ${tpl.data[ti+2]})`;
-                        const tileRGB = `rgb(${tileImageData.data[gi]}, ${tileImageData.data[gi+1]}, ${tileImageData.data[gi+2]})`;
-                        
-                        console.log(`[Wplace Tracker DEBUG] Pixel dessiné à [${absX}, ${absY}] : Template = ${tplRGB} | Carte = ${tileRGB} -> ${isMatch ? '✅ MATCH' : '❌ ERREUR'}`);
-                        
-                        const hex = rgbToHex(tpl.data[ti], tpl.data[ti+1], tpl.data[ti+2]);
-                        if (!tileColorResults[drawing.id][tileKey][hex]) {
-                            tileColorResults[drawing.id][tileKey][hex] = 0;
-                        }
-
-                        if (isMatch) {
-                            correct++;
-                            tileColorResults[drawing.id][tileKey][hex]++;
-                        } else {
-                            wrong++;
-                        }
-                    }
-                }
-            }
+            tileColorResults[drawing.id][tileKey] = colorCounts;
 
             // Stocker le résultat pour CETTE tuile spécifiquement
             if (!tileResults[drawing.id]) tileResults[drawing.id] = {};
@@ -292,13 +394,15 @@
             if (tileColorResults[drawing.id]) {
                 for (const tKey of Object.keys(tileColorResults[drawing.id])) {
                     const colors = tileColorResults[drawing.id][tKey];
-                    for (const [hex, count] of Object.entries(colors)) {
-                        totalColorCorrects[hex] = (totalColorCorrects[hex] || 0) + count;
+                    if (colors) {
+                        for (const [hex, count] of Object.entries(colors)) {
+                            totalColorCorrects[hex] = (totalColorCorrects[hex] || 0) + count;
+                        }
                     }
                 }
             }
 
-            console.log(`[Wplace Tracker] "${drawing.name}" tuile[${tileKey}] → ${opaque} opaques, ${correct}✅ ${wrong}❌ | Total toutes tuiles: ${totalCorrect}✅ ${totalWrong}❌`);
+            log(`[Wplace Tracker] "${drawing.name}" tuile[${tileKey}] → ${opaque} opaques, ${correct}✅ ${wrong}❌ | Total: ${totalCorrect}✅ ${totalWrong}❌`);
             sendProgress(drawing.id, totalCorrect, totalWrong, totalColorCorrects);
         }
     }
@@ -332,14 +436,14 @@
 
                 if (hasOverlap) {
                     const clone = response.clone();
-                    clone.blob().then(blob => analyzeTile(tileChunkX, tileChunkY, blob)).catch(() => {});
+                    clone.blob().then(blob => queueTileForAnalysis(tileChunkX, tileChunkY, blob)).catch(() => {});
                 }
             }
 
             return response;
         };
 
-        console.log('[Wplace Tracker] ✅ Interception fetch active (multi-tuiles supporté)');
+        log('[Wplace Tracker] ✅ Interception fetch active (multi-tuiles supporté, calculs en tâche de fond)');
     }
 
     // ─────────────────────────────────────────────
@@ -348,9 +452,9 @@
     async function init() {
         try {
             drawings = await fetchDrawings();
-            console.log(`[Wplace Tracker] ${drawings.length} dessin(s) chargé(s) :`);
+            console.log(`[Wplace Tracker] 🚀 Activé (v4.3) - ${drawings.length} dessin(s) chargé(s)`);
             drawings.forEach(d =>
-                console.log(`  → "${d.name}" : Chunk[${d.chunkX},${d.chunkY}] Offset[${d.offsetX},${d.offsetY}] Taille[${d.width}x${d.height}]`)
+                log(`  → "${d.name}" : Chunk[${d.chunkX},${d.chunkY}] Offset[${d.offsetX},${d.offsetY}] Taille[${d.width}x${d.height}]`)
             );
 
             for (const d of drawings) {
