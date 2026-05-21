@@ -1,0 +1,64 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Drawing {
+  id                 Int           @id @default(autoincrement())
+  name               String
+  chunkX             Int
+  chunkY             Int
+  offsetX            Int
+  offsetY            Int
+  width              Int
+  height             Int
+  totalPixels        Int
+  imageUrl           String
+  wplaceUrl          String?
+  isValidated        Boolean       @default(false)
+  pseudo             String        @default("Anonyme")
+  startedAt          DateTime?
+  completedAt        DateTime?
+  analysisInProgress Boolean       @default(false)
+  analysisProgress   Int           @default(0)
+  analysisTotal      Int           @default(0)
+  analysisLastRun    DateTime?
+  colorStats         ColorStat[]
+  progress           Progress[]
+  contributors       Contributor[]
+}
+
+model Contributor {
+  id         Int     @id @default(autoincrement())
+  drawingId  Int
+  username   String
+  pixelCount Int
+  drawing    Drawing @relation(fields: [drawingId], references: [id])
+
+  @@unique([drawingId, username])
+}
+
+model ColorStat {
+  id         Int     @id @default(autoincrement())
+  drawingId  Int
+  hexColor   String
+  pixelCount Int
+  correctCount Int   @default(0)
+  drawing    Drawing @relation(fields: [drawingId], references: [id])
+}
+
+model Progress {
+  id            Int      @id @default(autoincrement())
+  drawingId     Int
+  correctPixels Int
+  wrongPixels   Int
+  timestamp     DateTime @default(now())
+  drawing       Drawing  @relation(fields: [drawingId], references: [id])
+}
