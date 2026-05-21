@@ -3,6 +3,13 @@ import { prisma } from '@/prisma';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const trackerKey = request.headers.get('x-tracker-key') || request.headers.get('Authorization')?.replace('Bearer ', '');
+    const expectedKey = process.env.TRACKER_API_KEY || process.env.ADMIN_PASSWORD || 'azerty-05';
+
+    if (!trackerKey || trackerKey !== expectedKey) {
+      return NextResponse.json({ error: 'Unauthorized: Invalid or missing tracker key' }, { status: 401 });
+    }
+
     const resolvedParams = await params;
     const id = parseInt(resolvedParams.id);
     const body = await request.json();

@@ -1,22 +1,70 @@
 // ==UserScript==
 // @name         Wplace Tracker (Backend Sync)
 // @namespace    http://tampermonkey.net/
-// @version      4.1
+// @version      4.2
 // @description  Track drawing progress via tile fetch - multi-tile support
 // @author       Antigravity
 // @match        *://*.wplace.live/*
 // @match        *://wplace.live/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @connect      localhost
+// @connect      wplace-france-tracker.vercel.app
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const BACKEND_URL = 'http://localhost:3000/api';
     const CHUNK_SIZE = 1000;
     const TILE_URL_REGEX = /\/tiles\/(-?\d+)\/(-?\d+)\.png/;
+
+    // Initialisation dynamique des configurations
+    function getBackendUrl() {
+        let url = GM_getValue('BACKEND_URL');
+        if (!url) {
+            url = 'https://wplace-france-tracker.vercel.app/api';
+            GM_setValue('BACKEND_URL', url);
+        }
+        return url;
+    }
+
+    function getTrackerKey() {
+        let key = GM_getValue('TRACKER_API_KEY');
+        if (!key) {
+            key = prompt("[Wplace Tracker] Veuillez entrer votre clé d'API (ou mot de passe admin) pour synchroniser la progression :");
+            if (key) {
+                key = key.trim();
+                GM_setValue('TRACKER_API_KEY', key);
+            } else {
+                alert("[Wplace Tracker] Attention : Sans clé d'API, le suivi de progression sera rejeté par le serveur.");
+            }
+        }
+        return key;
+    }
+
+    // Commandes menu Tampermonkey pour pouvoir reconfigurer
+    if (typeof GM_registerMenuCommand !== 'undefined') {
+        GM_registerMenuCommand("Configurer la Clé d'API (Tracker Key)", () => {
+            const current = GM_getValue('TRACKER_API_KEY') || '';
+            const next = prompt("Entrez la nouvelle clé d'API (Tracker Key) :", current);
+            if (next !== null) {
+                GM_setValue('TRACKER_API_KEY', next.trim());
+                alert("Clé d'API mise à jour ! Rechargez la page.");
+            }
+        });
+
+        GM_registerMenuCommand("Configurer l'URL du Backend", () => {
+            const current = getBackendUrl();
+            const next = prompt("Entrez l'URL du Backend API (ex: https://.../api) :", current);
+            if (next !== null) {
+                GM_setValue('BACKEND_URL', next.trim());
+                alert("URL du Backend mise à jour ! Rechargez la page.");
+            }
+        });
+    }
 
     let drawings = [];
     const templateCache = {};
@@ -31,7 +79,7 @@
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${BACKEND_URL}/drawings`,
+                url: `${getBackendUrl()}/drawings`,
                 onload: r => r.status === 200 ? resolve(JSON.parse(r.responseText)) : reject(r.status),
                 onerror: reject
             });
@@ -42,9 +90,10 @@
         return new Promise((resolve, reject) => {
             if (templateCache[drawing.id]) return resolve(templateCache[drawing.id]);
 
+            const backendUrlBase = getBackendUrl().replace(/\/api$/, '');
             const imageFullUrl = drawing.imageUrl.startsWith('http://') || drawing.imageUrl.startsWith('https://')
                 ? drawing.imageUrl
-                : `http://localhost:3000${drawing.imageUrl}`;
+                : `${backendUrlBase}${drawing.imageUrl}`;
 
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -73,15 +122,26 @@
     }
 
     function sendProgress(drawingId, correctPixels, wrongPixels, colorCorrects) {
+        const key = getTrackerKey();
+        if (!key) return;
+
         GM_xmlhttpRequest({
             method: 'POST',
-            url: `${BACKEND_URL}/drawings/${drawingId}/progress`,
-            headers: { 'Content-Type': 'application/json' },
+            url: `${getBackendUrl()}/drawings/${drawingId}/progress`,
+            headers: { 
+                'Content-Type': 'application/json',
+                'x-tracker-key': key
+            },
             data: JSON.stringify({ correctPixels, wrongPixels, colorCorrects }),
             onload: r => {
                 if (r.status === 201) {
                     const resp = JSON.parse(r.responseText);
                     console.log(`[Wplace Tracker] 📊 ${resp.message}`);
+                } else if (r.status === 401) {
+                    console.error("[Wplace Tracker] ❌ Clé d'API invalide. Vous pouvez la reconfigurer dans le menu de Tampermonkey.");
+                    GM_setValue('TRACKER_API_KEY', ''); // reset to trigger prompt next time
+                } else {
+                    console.error(`[Wplace Tracker] ❌ Erreur serveur lors de l'envoi de la progression (HTTP ${r.status})`);
                 }
             }
         });
