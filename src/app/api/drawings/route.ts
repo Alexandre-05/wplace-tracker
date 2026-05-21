@@ -7,9 +7,6 @@ import path from 'path';
 
 // Configuration du dossier d'upload
 const uploadDir = path.join(process.cwd(), 'public', 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
 
 export const dynamic = 'force-dynamic';
 
@@ -74,6 +71,9 @@ export async function POST(request: NextRequest) {
       imageUrl = blob.url;
     } else {
       // Local development fallback
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
       const filepath = path.join(uploadDir, filename);
       fs.writeFileSync(filepath, buffer);
       imageUrl = `/uploads/${filename}`;

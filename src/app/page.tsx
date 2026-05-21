@@ -35,7 +35,14 @@ import {
   DialogFooter 
 } from "@/components/ui/dialog";
 
-const fetcher = (url: string) => fetch(url).then(r => r.json());
+const fetcher = async (url: string) => {
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Erreur de chargement des données.');
+  }
+  return res.json();
+};
 
 function getWplaceUrl(chunkX: number, chunkY: number, offsetX: number, offsetY: number) {
   const n = 2048000;
@@ -420,7 +427,7 @@ export default function Dashboard() {
   };
 
   // Find updated drawing to show current real-time details
-  const activeDetailDrawing = detailDrawing 
+  const activeDetailDrawing = (detailDrawing && Array.isArray(drawings))
     ? drawings.find((d: any) => d.id === detailDrawing.id) || detailDrawing 
     : null;
 
@@ -432,7 +439,9 @@ export default function Dashboard() {
       })
     : [];
 
-  const displayedDrawings = drawings?.filter((d: any) => d.isValidated || isAdmin) || [];
+  const displayedDrawings = Array.isArray(drawings)
+    ? drawings.filter((d: any) => d.isValidated || isAdmin)
+    : [];
 
   return (
     <div className="relative min-h-screen bg-slate-950 text-slate-100 overflow-x-hidden">
