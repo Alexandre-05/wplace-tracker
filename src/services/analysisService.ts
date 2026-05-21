@@ -1,5 +1,5 @@
 import { prisma } from '@/prisma';
-import WplaceAPI from 'wplace-api';
+import WplaceAPI from 'wplace-api/dist/main.js';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
