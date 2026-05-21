@@ -25,8 +25,15 @@ export async function GET() {
       }
     });
     return NextResponse.json(drawings);
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to fetch drawings' }, { status: 500 });
+  } catch (error: any) {
+    console.error('[API Drawings GET Error]', error);
+    return NextResponse.json({ 
+      error: 'Failed to fetch drawings',
+      message: error?.message || String(error),
+      code: error?.code,
+      meta: error?.meta,
+      stack: error?.stack
+    }, { status: 500 });
   }
 }
 
