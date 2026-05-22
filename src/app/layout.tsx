@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Wplace France Tracker",
-  description: "Suivi en temps réel de la progression et des statistiques des dessins wplace.",
+  description:
+    "Suivi en temps réel de la progression et des statistiques des dessins wplace.",
 };
 
 export default function RootLayout({
