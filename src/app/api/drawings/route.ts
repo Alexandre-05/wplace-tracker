@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
 
     if (process.env.BLOB_READ_WRITE_TOKEN) {
       // Vercel Blob (production cloud storage)
-      const blob = await put(filename, file, { access: 'public' });
+      const blob = await put(filename, file, { access: 'private' });
       imageUrl = blob.url;
     } else {
       // Local development fallback
