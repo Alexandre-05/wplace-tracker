@@ -4,6 +4,7 @@ import { processImageStats } from '@/services/imageService';
 import { put } from '@vercel/blob';
 import fs from 'fs';
 import path from 'path';
+import { verifySiteSession } from '@/lib/auth';
 
 // Configuration du dossier d'upload
 const uploadDir = path.join(process.cwd(), 'public', 'uploads');
@@ -12,6 +13,10 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    if (!(await verifySiteSession())) {
+      return NextResponse.json({ error: 'Unauthorized: Access password required' }, { status: 401 });
+    }
+
     const drawings = await prisma.drawing.findMany({
       include: {
         colorStats: true,
@@ -39,6 +44,10 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    if (!(await verifySiteSession())) {
+      return NextResponse.json({ error: 'Unauthorized: Access password required' }, { status: 401 });
+    }
+
     const formData = await request.formData();
     const name = formData.get('name') as string;
     const chunkX = formData.get('chunkX') as string;

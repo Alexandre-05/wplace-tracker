@@ -22,7 +22,9 @@ import {
   Check,
   Users,
   Trophy,
-  BarChart2
+  BarChart2,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -178,7 +180,15 @@ export default function Dashboard() {
   // Details Modal state (déclaré en premier pour être disponible dans le hook useSWR)
   const [detailDrawing, setDetailDrawing] = useState<any | null>(null);
   
-  const { data: drawings, error, mutate } = useSWR('/api/drawings', fetcher, { 
+  // États de sécurité / Lock Screen
+  const [isSiteAuthorized, setIsSiteAuthorized] = useState(false);
+  const [isCheckingSiteAuth, setIsCheckingSiteAuth] = useState(true);
+  const [sitePassword, setSitePassword] = useState('');
+  const [sitePasswordError, setSitePasswordError] = useState<string | null>(null);
+  const [isSubmittingSitePassword, setIsSubmittingSitePassword] = useState(false);
+  const [showSitePassword, setShowSitePassword] = useState(false);
+  
+  const { data: drawings, error, mutate } = useSWR(isSiteAuthorized ? '/api/drawings' : null, fetcher, { 
     refreshInterval: 60000 
   });
   
@@ -398,20 +408,57 @@ export default function Dashboard() {
     }
   };
 
-  // Check authentication status on mount
+  // Check authorization and admin status on mount
   React.useEffect(() => {
-    const checkAdminStatus = async () => {
+    const checkSiteAuthorization = async () => {
       try {
-        const response = await fetch('/api/admin/check');
+        const response = await fetch('/api/auth/site/check');
         const data = await response.json();
-        setIsAdmin(data.isAdmin);
+        setIsSiteAuthorized(data.isAuthorized);
+        if (data.isAuthorized) {
+          const adminResponse = await fetch('/api/admin/check');
+          const adminData = await adminResponse.json();
+          setIsAdmin(adminData.isAdmin);
+        }
       } catch (err) {
-        console.error('Erreur lors de la vérification de session admin:', err);
-        setIsAdmin(false);
+        console.error("Erreur lors de la vérification de l'accès au site:", err);
+      } finally {
+        setIsCheckingSiteAuth(false);
       }
     };
-    checkAdminStatus();
+    checkSiteAuthorization();
   }, []);
+
+  const handleSiteLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSitePasswordError(null);
+    setIsSubmittingSitePassword(true);
+    try {
+      const response = await fetch('/api/auth/site/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: sitePassword })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Mot de passe incorrect.');
+      }
+      setIsSiteAuthorized(true);
+      setSitePassword('');
+      
+      // Charger l'état admin en parallèle après connexion réussie
+      const adminResponse = await fetch('/api/admin/check');
+      const adminData = await adminResponse.json();
+      setIsAdmin(adminData.isAdmin);
+      
+      // Déclencher le rechargement SWR immédiatement
+      mutate();
+    } catch (err: any) {
+      setSitePasswordError(err.message || 'Une erreur est survenue.');
+    } finally {
+      setIsSubmittingSitePassword(false);
+    }
+  };
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -516,6 +563,107 @@ export default function Dashboard() {
       setIsDeleting(false);
     }
   };
+
+  if (isCheckingSiteAuth) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 p-6 text-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-10 w-10 animate-spin text-slate-500" />
+          <p className="text-sm font-medium text-slate-500 animate-pulse font-mono">
+            VÉRIFICATION DE L'ACCÈS...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isSiteAuthorized) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 p-4 text-center">
+        <Card className="w-full max-w-md border-slate-800 bg-slate-900 shadow-2xl">
+          <CardHeader className="space-y-1 pb-6">
+            {/* Logo */}
+            <div className="flex justify-center mb-4">
+              <img
+                src="/icon.jpg"
+                alt="Wplace France Globe"
+                className="w-16 h-16 rounded-full border border-slate-800 object-cover shadow"
+              />
+            </div>
+            <CardTitle className="text-xl font-bold tracking-tight text-slate-100">
+              Wplace France Tracker
+            </CardTitle>
+            <CardDescription className="text-slate-400 text-sm">
+              Saisissez le mot de passe d'accès pour déverrouiller le tableau de bord.
+            </CardDescription>
+          </CardHeader>
+          
+          <CardContent>
+            <form onSubmit={handleSiteLoginSubmit} className="space-y-4 text-left">
+              {sitePasswordError && (
+                <div className="flex items-center gap-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 p-3 text-xs animate-shake">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span className="font-medium">{sitePasswordError}</span>
+                </div>
+              )}
+              
+              <div className="space-y-2">
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+                    <Lock className="h-4 w-4" />
+                  </div>
+                  <input
+                    type={showSitePassword ? "text" : "password"}
+                    value={sitePassword}
+                    onChange={(e) => setSitePassword(e.target.value)}
+                    placeholder="Mot de passe..."
+                    className="block w-full pl-9 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-700 focus:border-slate-700 transition-all text-sm font-mono"
+                    required
+                    disabled={isSubmittingSitePassword}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSitePassword(!showSitePassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300 transition-colors"
+                    disabled={isSubmittingSitePassword}
+                  >
+                    {showSitePassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              
+              <Button
+                type="submit"
+                disabled={isSubmittingSitePassword}
+                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-950 font-semibold rounded-lg py-2 transition-colors duration-150"
+              >
+                {isSubmittingSitePassword ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Vérification...
+                  </>
+                ) : (
+                  <>
+                    Déverrouiller
+                  </>
+                )}
+              </Button>
+            </form>
+          </CardContent>
+          
+          <CardFooter className="justify-center border-t border-slate-800/50 pt-4 pb-4">
+            <p className="text-[10px] text-slate-500 font-mono tracking-wider uppercase">
+              Wplace France &copy; 2026
+            </p>
+          </CardFooter>
+        </Card>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -690,8 +838,12 @@ export default function Dashboard() {
         <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-900 pb-6 mb-8 gap-4">
           <div>
             <div className="flex items-center gap-3">
-              <div className="bg-blue-600 p-2.5 rounded-xl shadow-md">
-                <Compass className="h-5 w-5 text-white" />
+              <div className="border border-slate-800 rounded-xl bg-slate-900 shadow-md overflow-hidden flex-shrink-0">
+                <img
+                  src="/icon.jpg"
+                  alt="Wplace France Globe"
+                  className="h-10 w-10 object-cover"
+                />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
                 Wplace.live Tracker

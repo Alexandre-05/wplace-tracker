@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/prisma';
-import { verifyAdminSession } from '@/lib/auth';
+import { verifyAdminSession, verifySiteSession } from '@/lib/auth';
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    if (!(await verifySiteSession())) {
+      return NextResponse.json({ error: 'Unauthorized: Access password required' }, { status: 401 });
+    }
+
     const resolvedParams = await params;
     const id = parseInt(resolvedParams.id);
     const drawing = await prisma.drawing.findUnique({
