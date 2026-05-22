@@ -3,11 +3,44 @@ import WplaceAPI from '@/wplace-api/main';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
+import { get } from '@vercel/blob';
 
 const rgbToHex = (r: number, g: number, b: number): string => {
   const toHex = (c: number) => c.toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
 };
+
+/**
+ * Fetches a template image from local disk, standard remote URL, or a private Vercel Blob URL.
+ */
+async function fetchTemplateImage(imageUrl: string): Promise<Buffer> {
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    if (imageUrl.includes('blob.vercel-storage.com')) {
+      console.log(`[Analysis] Fetching private template image from Vercel Blob: ${imageUrl}`);
+      const result = await get(imageUrl, { access: 'private' });
+      if (!result) {
+        throw new Error(`Failed to fetch private template image from Vercel Blob ${imageUrl}`);
+      }
+      const arrayBuffer = await new Response(result.stream).arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    } else {
+      console.log(`[Analysis] Fetching template image from remote URL: ${imageUrl}`);
+      const res = await fetch(imageUrl);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch template image from URL ${imageUrl}: ${res.statusText}`);
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+  } else {
+    // Local development fallback
+    const filepath = path.join(process.cwd(), 'public', imageUrl);
+    if (!fs.existsSync(filepath)) {
+      throw new Error(`Template image file not found at ${filepath}`);
+    }
+    return fs.readFileSync(filepath);
+  }
+}
 
 /**
  * Runs a background scan of the canvas to identify who painted each correct pixel of the drawing.
@@ -45,25 +78,7 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
 
   try {
     const imageUrl = drawing.imageUrl;
-    let tplBuffer: Buffer;
-
-    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-      // Remote URL (Vercel Blob / Production)
-      console.log(`[Analysis] Fetching template image from remote URL: ${imageUrl}`);
-      const res = await fetch(imageUrl);
-      if (!res.ok) {
-        throw new Error(`Failed to fetch template image from URL ${imageUrl}: ${res.statusText}`);
-      }
-      const arrayBuffer = await res.arrayBuffer();
-      tplBuffer = Buffer.from(arrayBuffer);
-    } else {
-      // Local development fallback
-      const filepath = path.join(process.cwd(), 'public', imageUrl);
-      if (!fs.existsSync(filepath)) {
-        throw new Error(`Template image file not found at ${filepath}`);
-      }
-      tplBuffer = fs.readFileSync(filepath);
-    }
+    const tplBuffer = await fetchTemplateImage(imageUrl);
     const metadata = await sharp(tplBuffer).metadata();
     const tplW = metadata.width || 0;
     const tplH = metadata.height || 0;
@@ -272,23 +287,7 @@ export async function syncDrawingProgress(drawingId: number): Promise<{ correctP
 
   const wplaceApi = new WplaceAPI();
   const imageUrl = drawing.imageUrl;
-  let tplBuffer: Buffer;
-
-  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-    console.log(`[Sync] Fetching template image from remote URL: ${imageUrl}`);
-    const res = await fetch(imageUrl);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch template image from URL ${imageUrl}: ${res.statusText}`);
-    }
-    const arrayBuffer = await res.arrayBuffer();
-    tplBuffer = Buffer.from(arrayBuffer);
-  } else {
-    const filepath = path.join(process.cwd(), 'public', imageUrl);
-    if (!fs.existsSync(filepath)) {
-      throw new Error(`Template image file not found at ${filepath}`);
-    }
-    tplBuffer = fs.readFileSync(filepath);
-  }
+  const tplBuffer = await fetchTemplateImage(imageUrl);
 
   const metadata = await sharp(tplBuffer).metadata();
   const tplW = metadata.width || 0;
