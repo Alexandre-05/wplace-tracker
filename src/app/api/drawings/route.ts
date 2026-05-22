@@ -29,7 +29,15 @@ export async function GET() {
         }
       }
     });
-    return NextResponse.json(drawings);
+
+    const mappedDrawings = drawings.map(d => ({
+      ...d,
+      imageUrl: d.imageUrl.startsWith('https://') 
+        ? `/api/images?url=${encodeURIComponent(d.imageUrl)}` 
+        : d.imageUrl
+    }));
+
+    return NextResponse.json(mappedDrawings);
   } catch (error: any) {
     console.error('[API Drawings GET Error]', error);
     return NextResponse.json({ 
@@ -125,7 +133,14 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    return NextResponse.json(newDrawing, { status: 201 });
+    const mappedDrawing = {
+      ...newDrawing,
+      imageUrl: newDrawing.imageUrl.startsWith('https://')
+        ? `/api/images?url=${encodeURIComponent(newDrawing.imageUrl)}`
+        : newDrawing.imageUrl
+    };
+
+    return NextResponse.json(mappedDrawing, { status: 201 });
   } catch (error) {
     console.error(error);
     return NextResponse.json({ error: 'Failed to create drawing' }, { status: 500 });

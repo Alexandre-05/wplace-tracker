@@ -28,7 +28,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'Drawing not found' }, { status: 404 });
     }
 
-    return NextResponse.json(drawing);
+    const mappedDrawing = {
+      ...drawing,
+      imageUrl: drawing.imageUrl.startsWith('https://')
+        ? `/api/images?url=${encodeURIComponent(drawing.imageUrl)}`
+        : drawing.imageUrl
+    };
+
+    return NextResponse.json(mappedDrawing);
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch drawing details' }, { status: 500 });
   }
@@ -60,7 +67,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     });
 
-    return NextResponse.json(updated);
+    const mappedUpdated = {
+      ...updated,
+      imageUrl: updated.imageUrl.startsWith('https://')
+        ? `/api/images?url=${encodeURIComponent(updated.imageUrl)}`
+        : updated.imageUrl
+    };
+
+    return NextResponse.json(mappedUpdated);
   } catch (error) {
     console.error(error);
     return NextResponse.json({ error: 'Failed to update drawing' }, { status: 500 });
