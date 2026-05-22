@@ -246,25 +246,38 @@ export default function Dashboard() {
               return;
             }
 
-            console.log("%c[Wplace Tracker] 🔄 Déclenchement automatique de la vérification séquentielle...", "color: #eab308; font-weight: bold;");
+            console.log("%c[Wplace Tracker] 🔄 Déclenchement automatique de la vérification...", "color: #eab308; font-weight: bold;");
             const startTime = Date.now();
             
-            for (let i = 0; i < drawingsToSync.length; i++) {
-              const drawing = drawingsToSync[i];
-              setSyncProgress(`Vérification : ${drawing.name} (${i + 1}/${drawingsToSync.length})`);
-              
+            if (process.env.NODE_ENV === 'production') {
+              // En production, on rafraîchit simplement les données déjà synchronisées en base
+              // par le cron externe pour économiser les ressources et éviter les erreurs 401.
+              setSyncProgress("Actualisation...");
               try {
-                const res = await fetch(`/api/cron/sync?drawingId=${drawing.id}`);
-                const data = await res.json();
-                console.log(`[Wplace Tracker] Synchro dessin "${drawing.name}" terminée :`, data);
                 await mutate();
+                console.log("[Wplace Tracker] ✅ Données actualisées avec succès depuis la base de données.");
               } catch (err) {
-                console.error(`[Wplace Tracker] Erreur synchro dessin "${drawing.name}" :`, err);
+                console.error("[Wplace Tracker] Erreur lors de l'actualisation des données :", err);
               }
-            } 
+            } else {
+              // En développement local, on lance la synchronisation complète automatiquement
+              for (let i = 0; i < drawingsToSync.length; i++) {
+                const drawing = drawingsToSync[i];
+                setSyncProgress(`Vérification : ${drawing.name} (${i + 1}/${drawingsToSync.length})`);
+                
+                try {
+                  const res = await fetch(`/api/cron/sync?drawingId=${drawing.id}`);
+                  const data = await res.json();
+                  console.log(`[Wplace Tracker] Synchro dessin "${drawing.name}" terminée :`, data);
+                  await mutate();
+                } catch (err) {
+                  console.error(`[Wplace Tracker] Erreur synchro dessin "${drawing.name}" :`, err);
+                }
+              }
+            }
             
             const totalDuration = Date.now() - startTime;
-            console.log(`%c[Wplace Tracker] ✅ Vérification complète terminée en ${totalDuration}ms !`, "color: #10b981; font-weight: bold;");
+            console.log(`%c[Wplace Tracker] ✅ Fin de la vérification automatique en ${totalDuration}ms !`, "color: #10b981; font-weight: bold;");
             setSyncProgress(null);
             setIsSyncing(false);
           };
