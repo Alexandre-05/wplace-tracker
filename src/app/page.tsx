@@ -368,6 +368,27 @@ export default function Dashboard() {
   const [deleteDrawing, setDeleteDrawing] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Hook d'actualisation de logs d'analyse pour les administrateurs connectés
+  React.useEffect(() => {
+    if (!isAdmin || !drawings || !Array.isArray(drawings)) return;
+
+    const activeDrawing = drawings.find((d: any) => d.analysisInProgress);
+    if (activeDrawing) {
+      const progress = activeDrawing.analysisProgress;
+      const total = activeDrawing.analysisTotal;
+      const percentage = total > 0 ? ((progress / total) * 100).toFixed(1) : '0.0';
+
+      console.log(
+        `%c[WPLACE ADMIN] %cDessin "${activeDrawing.name}" en cours d'analyse ➡️ %c${progress}/${total} px (%c${percentage}%%c)`,
+        "color: #3b82f6; font-weight: bold;",
+        "color: #cbd5e1;",
+        "color: #60a5fa; font-family: monospace; font-weight: bold;",
+        "color: #10b981; font-family: monospace; font-weight: bold;",
+        "color: #cbd5e1;"
+      );
+    }
+  }, [drawings, isAdmin]);
+
   const handleTriggerAnalysis = async (drawingId: number) => {
     if (!isAdmin) {
       alert("Accès refusé : Le mode administrateur est requis.");
