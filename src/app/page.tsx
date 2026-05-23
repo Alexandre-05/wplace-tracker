@@ -180,6 +180,9 @@ export default function Dashboard() {
   // Details Modal state (déclaré en premier pour être disponible dans le hook useSWR)
   const [detailDrawing, setDetailDrawing] = useState<any | null>(null);
   
+  // Admin-related states (déclaré haut pour être dispo dans les hooks SWR/logs)
+  const [isAdmin, setIsAdmin] = useState(false);
+
   // États de sécurité / Lock Screen
   const [isSiteAuthorized, setIsSiteAuthorized] = useState(false);
   const [isCheckingSiteAuth, setIsCheckingSiteAuth] = useState(true);
@@ -225,18 +228,20 @@ export default function Dashboard() {
             const diffCorrect = currentCorrect - prevCorrect;
             const diffWrong = currentWrong - prevWrong;
             
-            console.log(
-              `%c[Wplace Tracker] Modification détectée pour "${drawing.name}" : %cCorrect: ${prevCorrect} → ${currentCorrect} (${diffCorrect >= 0 ? '+' : ''}${diffCorrect}) | Erreurs: ${prevWrong} → ${currentWrong} (${diffWrong >= 0 ? '+' : ''}${diffWrong})`,
-              'color: #3b82f6; font-weight: bold;',
-              'color: #10b981; font-weight: bold;'
-            );
+            if (isAdmin) {
+              console.log(
+                `%c[Wplace Tracker] Modification détectée pour "${drawing.name}" : %cCorrect: ${prevCorrect} → ${currentCorrect} (${diffCorrect >= 0 ? '+' : ''}${diffCorrect}) | Erreurs: ${prevWrong} → ${currentWrong} (${diffWrong >= 0 ? '+' : ''}${diffWrong})`,
+                'color: #3b82f6; font-weight: bold;',
+                'color: #10b981; font-weight: bold;'
+              );
+            }
           }
         }
       });
     }
     
     prevDrawingsRef.current = drawings;
-  }, [drawings]);
+  }, [drawings, isAdmin]);
 
   // Hook de compte à rebours circulaire toutes les 5 minutes avec déclenchement automatique
   React.useEffect(() => {
@@ -257,7 +262,9 @@ export default function Dashboard() {
               return;
             }
 
-            console.log("%c[Wplace Tracker] 🔄 Déclenchement automatique de la vérification...", "color: #eab308; font-weight: bold;");
+            if (isAdmin) {
+              console.log("%c[Wplace Tracker] 🔄 Déclenchement automatique de la vérification...", "color: #eab308; font-weight: bold;");
+            }
             const startTime = Date.now();
             
             if (process.env.NODE_ENV === 'production') {
@@ -266,9 +273,13 @@ export default function Dashboard() {
               setSyncProgress("Actualisation...");
               try {
                 await mutate();
-                console.log("[Wplace Tracker] ✅ Données actualisées avec succès depuis la base de données.");
+                if (isAdmin) {
+                  console.log("[Wplace Tracker] ✅ Données actualisées avec succès depuis la base de données.");
+                }
               } catch (err) {
-                console.error("[Wplace Tracker] Erreur lors de l'actualisation des données :", err);
+                if (isAdmin) {
+                  console.error("[Wplace Tracker] Erreur lors de l'actualisation des données :", err);
+                }
               }
             } else {
               // En développement local, on lance la synchronisation complète automatiquement
@@ -279,16 +290,22 @@ export default function Dashboard() {
                 try {
                   const res = await fetch(`/api/cron/sync?drawingId=${drawing.id}`);
                   const data = await res.json();
-                  console.log(`[Wplace Tracker] Synchro dessin "${drawing.name}" terminée :`, data);
+                  if (isAdmin) {
+                    console.log(`[Wplace Tracker] Synchro dessin "${drawing.name}" terminée :`, data);
+                  }
                   await mutate();
                 } catch (err) {
-                  console.error(`[Wplace Tracker] Erreur synchro dessin "${drawing.name}" :`, err);
+                  if (isAdmin) {
+                    console.error(`[Wplace Tracker] Erreur synchro dessin "${drawing.name}" :`, err);
+                  }
                 }
               }
             }
             
             const totalDuration = Date.now() - startTime;
-            console.log(`%c[Wplace Tracker] ✅ Fin de la vérification automatique en ${totalDuration}ms !`, "color: #10b981; font-weight: bold;");
+            if (isAdmin) {
+              console.log(`%c[Wplace Tracker] ✅ Fin de la vérification automatique en ${totalDuration}ms !`, "color: #10b981; font-weight: bold;");
+            }
             setSyncProgress(null);
             setIsSyncing(false);
           };
@@ -301,7 +318,7 @@ export default function Dashboard() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isSyncing, drawings, mutate]);
+  }, [isSyncing, drawings, mutate, isAdmin]);
 
   // Modal & Form states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -347,7 +364,6 @@ export default function Dashboard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Admin-related states
-  const [isAdmin, setIsAdmin] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);

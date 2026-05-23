@@ -149,8 +149,11 @@ export default class WplaceAPI {
 	 * @param route API route to fetch
 	 * @returns Response object
 	 */
-	private async getPlain(route: string, headers: HeaderMap = {}): Promise<Result<Response, Error>> {
+	private async getPlain(route: string, headers: HeaderMap = {}, attempts = 0): Promise<Result<Response, Error>> {
 		let res: Response
+
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s Timeout
 
 		try {
 			res = await fetch(`${this.options.API_ROOT}${route}`, {
@@ -158,21 +161,31 @@ export default class WplaceAPI {
 				headers: {
 					...headers,
 					"User-Agent": this.options.userAgent
-				}
-			})
-		} catch (e) {
-			return err(e as Error)
+				},
+				signal: controller.signal
+			});
+		} catch (e: any) {
+			if (e.name === 'AbortError') {
+				return err(new Error(`Request timed out after 10 seconds for ${route}`));
+			}
+			return err(e as Error);
+		} finally {
+			clearTimeout(timeoutId);
 		}
 
 		if (!res.ok && res.status == 429) {
-			const retryAfter = res.headers.get("Retry-After")
-			const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : this.options.defaultRetryAfter
-			//console.log(`Rate limited. Retrying after ${waitTime}ms...`)
+			if (attempts >= 3) {
+				return err(new Error(`Failed after 3 rate limit retry attempts for ${route}`));
+			}
+			const retryAfter = res.headers.get("Retry-After");
+			const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : this.options.defaultRetryAfter;
+			console.warn(`[Wplace API] Rate limited (429). Retrying attempt ${attempts + 1}/3 after ${waitTime}ms...`);
 
-			return sleep(waitTime).then(() => this.getPlain(route, headers))
+			await sleep(waitTime);
+			return this.getPlain(route, headers, attempts + 1);
 		}
 
-		return ok(res)
+		return ok(res);
 	}
 
 	/**

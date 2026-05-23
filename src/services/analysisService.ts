@@ -72,7 +72,7 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
     },
   });
 
-  const wplaceApi = new WplaceAPI();
+  const wplaceApi = new WplaceAPI({ defaultRetryAfter: 5000 });
   const contributorCounts = new Map<string, number>();
   const contributorColors = new Map<string, Map<string, number>>();
 
@@ -296,7 +296,7 @@ export async function syncDrawingProgress(drawingId: number): Promise<{ correctP
     throw new Error(`Drawing ${drawingId} not found.`);
   }
 
-  const wplaceApi = new WplaceAPI();
+  const wplaceApi = new WplaceAPI({ defaultRetryAfter: 5000 });
   const imageUrl = drawing.imageUrl;
   const tplBuffer = await fetchTemplateImage(imageUrl);
 
