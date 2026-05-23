@@ -229,8 +229,8 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
 
       const progressCount = i + 1;
 
-      // Update progress and intermediate contributor stats in DB every 50 pixels or at the end
-      if (progressCount % 50 === 0 || progressCount === totalCorrect) {
+      // Update progress and intermediate contributor stats in DB every 10 pixels or at the end
+      if (progressCount % 10 === 0 || progressCount === totalCorrect) {
         console.log(`[Analysis] Saving progress and intermediate stats to DB: ${progressCount}/${totalCorrect}`);
         await prisma.$transaction([
           // Update progress
@@ -260,9 +260,9 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
         ]);
       }
 
-      // 200ms throttle delay to avoid IP bans/rate limits
+      // 500ms throttle delay to avoid IP bans/rate limits (exactly 2 px/s)
       if (i < totalCorrect - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
 

@@ -1398,7 +1398,7 @@ export default function Dashboard() {
                         ? `${activeDetailDrawing.analysisProgress} / ${activeDetailDrawing.analysisTotal} pixels` 
                         : 'Détection des pixels corrects...'}
                     </span>
-                    <span className="text-slate-500 italic">Cadencé à 5 req/s (200ms)</span>
+                    <span className="text-slate-500 italic">Cadencé à 2 px/s (500ms)</span>
                   </div>
                 </div>
               )}
