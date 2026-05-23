@@ -189,7 +189,8 @@ export default function Dashboard() {
   const [showSitePassword, setShowSitePassword] = useState(false);
   
   const { data: drawings, error, mutate } = useSWR(isSiteAuthorized ? '/api/drawings' : null, fetcher, { 
-    refreshInterval: 60000 
+    refreshInterval: (latestData: any) => 
+      latestData?.some((d: any) => d.analysisInProgress) ? 5000 : 60000 
   });
   
   // États pour le minuteur circulaire et les logs de changements

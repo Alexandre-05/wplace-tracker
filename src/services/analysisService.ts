@@ -194,76 +194,77 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
       },
     });
 
-    const BATCH_SIZE = 5;
+    if (totalCorrect === 0) {
+      console.log(`[Analysis] No correct pixels found. Clearing contributors.`);
+      await prisma.contributor.deleteMany({
+        where: { drawingId },
+      });
+      return;
+    }
 
-    // Query wplace.live API for each correct pixel in batches of 5 in parallel
-    for (let i = 0; i < totalCorrect; i += BATCH_SIZE) {
-      const batch = correctPixelsToQuery.slice(i, i + BATCH_SIZE);
+    // Query wplace.live API for each correct pixel with a 200ms delay between calls
+    for (let i = 0; i < totalCorrect; i++) {
+      const p = correctPixelsToQuery[i]!;
+      let username = 'Anonyme';
 
-      // Execute the batch queries concurrently
-      const results = await Promise.all(
-        batch.map(async (p) => {
-          let username = 'Anonyme';
-          try {
-            const pixelRes = await wplaceApi.getPixel(p.tileX, p.tileY, p.pxOnTile, p.pyOnTile);
-            if (pixelRes.ok) {
-              const pixelData = pixelRes.value;
-              username = pixelData.paintedBy?.name || 'Anonyme';
-            } else {
-              console.error(`[Analysis] Error fetching pixel metadata:`, pixelRes.error);
-            }
-          } catch (err) {
-            console.error(`[Analysis] Unexpected error fetching pixel:`, err);
-          }
-          return { username, hexColor: p.hexColor };
-        })
-      );
-
-      // Accumulate the batch results
-      for (const res of results) {
-        contributorCounts.set(res.username, (contributorCounts.get(res.username) || 0) + 1);
-
-        if (!contributorColors.has(res.username)) {
-          contributorColors.set(res.username, new Map<string, number>());
+      try {
+        const pixelRes = await wplaceApi.getPixel(p.tileX, p.tileY, p.pxOnTile, p.pyOnTile);
+        if (pixelRes.ok) {
+          const pixelData = pixelRes.value;
+          username = pixelData.paintedBy?.name || 'Anonyme';
+        } else {
+          console.error(`[Analysis] Error fetching pixel metadata:`, pixelRes.error);
         }
-        const userColors = contributorColors.get(res.username)!;
-        userColors.set(res.hexColor, (userColors.get(res.hexColor) || 0) + 1);
+      } catch (err) {
+        console.error(`[Analysis] Unexpected error fetching pixel:`, err);
       }
 
-      // Update progress in the database at the end of the batch
-      const progressCount = Math.min(i + batch.length, totalCorrect);
-      await prisma.drawing.update({
-        where: { id: drawingId },
-        data: {
-          analysisProgress: progressCount,
-        },
-      });
+      contributorCounts.set(username, (contributorCounts.get(username) || 0) + 1);
 
-      // 200ms throttle delay between batches to avoid IP bans/rate limits
-      if (i + BATCH_SIZE < totalCorrect) {
+      if (!contributorColors.has(username)) {
+        contributorColors.set(username, new Map<string, number>());
+      }
+      const userColors = contributorColors.get(username)!;
+      userColors.set(p.hexColor, (userColors.get(p.hexColor) || 0) + 1);
+
+      const progressCount = i + 1;
+
+      // Update progress and intermediate contributor stats in DB every 50 pixels or at the end
+      if (progressCount % 50 === 0 || progressCount === totalCorrect) {
+        console.log(`[Analysis] Saving progress and intermediate stats to DB: ${progressCount}/${totalCorrect}`);
+        await prisma.$transaction([
+          // Update progress
+          prisma.drawing.update({
+            where: { id: drawingId },
+            data: {
+              analysisProgress: progressCount,
+            },
+          }),
+          // Delete old temporary contributors
+          prisma.contributor.deleteMany({
+            where: { drawingId },
+          }),
+          // Create updated contributor records
+          prisma.contributor.createMany({
+            data: Array.from(contributorCounts.entries()).map(([username, pixelCount]) => {
+              const userColorsMap = contributorColors.get(username);
+              const colorsObj = userColorsMap ? Object.fromEntries(userColorsMap.entries()) : {};
+              return {
+                drawingId,
+                username,
+                pixelCount,
+                colors: colorsObj,
+              };
+            }),
+          }),
+        ]);
+      }
+
+      // 200ms throttle delay to avoid IP bans/rate limits
+      if (i < totalCorrect - 1) {
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }
-
-    // Save final contributor records to database
-    console.log(`[Analysis] Finished scan. Saving contributors to DB:`, Object.fromEntries(contributorCounts));
-    await prisma.$transaction([
-      prisma.contributor.deleteMany({
-        where: { drawingId },
-      }),
-      prisma.contributor.createMany({
-        data: Array.from(contributorCounts.entries()).map(([username, pixelCount]) => {
-          const userColorsMap = contributorColors.get(username);
-          const colorsObj = userColorsMap ? Object.fromEntries(userColorsMap.entries()) : {};
-          return {
-            drawingId,
-            username,
-            pixelCount,
-            colors: colorsObj,
-          };
-        }),
-      }),
-    ]);
 
   } catch (error) {
     console.error(`[Analysis] Critical error during background contributor analysis for drawing ${drawingId}:`, error);
