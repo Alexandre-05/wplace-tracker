@@ -194,43 +194,53 @@ export async function runContributorAnalysis(drawingId: number): Promise<void> {
       },
     });
 
-    // Query wplace.live API for each correct pixel with a 200ms delay between calls
-    for (let i = 0; i < totalCorrect; i++) {
-      const p = correctPixelsToQuery[i]!;
-      let username = 'Anonyme';
+    const BATCH_SIZE = 5;
 
-      try {
-        const pixelRes = await wplaceApi.getPixel(p.tileX, p.tileY, p.pxOnTile, p.pyOnTile);
-        if (pixelRes.ok) {
-          const pixelData = pixelRes.value;
-          username = pixelData.paintedBy?.name || 'Anonyme';
-        } else {
-          console.error(`[Analysis] Error fetching pixel metadata:`, pixelRes.error);
+    // Query wplace.live API for each correct pixel in batches of 5 in parallel
+    for (let i = 0; i < totalCorrect; i += BATCH_SIZE) {
+      const batch = correctPixelsToQuery.slice(i, i + BATCH_SIZE);
+
+      // Execute the batch queries concurrently
+      const results = await Promise.all(
+        batch.map(async (p) => {
+          let username = 'Anonyme';
+          try {
+            const pixelRes = await wplaceApi.getPixel(p.tileX, p.tileY, p.pxOnTile, p.pyOnTile);
+            if (pixelRes.ok) {
+              const pixelData = pixelRes.value;
+              username = pixelData.paintedBy?.name || 'Anonyme';
+            } else {
+              console.error(`[Analysis] Error fetching pixel metadata:`, pixelRes.error);
+            }
+          } catch (err) {
+            console.error(`[Analysis] Unexpected error fetching pixel:`, err);
+          }
+          return { username, hexColor: p.hexColor };
+        })
+      );
+
+      // Accumulate the batch results
+      for (const res of results) {
+        contributorCounts.set(res.username, (contributorCounts.get(res.username) || 0) + 1);
+
+        if (!contributorColors.has(res.username)) {
+          contributorColors.set(res.username, new Map<string, number>());
         }
-      } catch (err) {
-        console.error(`[Analysis] Unexpected error fetching pixel:`, err);
+        const userColors = contributorColors.get(res.username)!;
+        userColors.set(res.hexColor, (userColors.get(res.hexColor) || 0) + 1);
       }
 
-      contributorCounts.set(username, (contributorCounts.get(username) || 0) + 1);
+      // Update progress in the database at the end of the batch
+      const progressCount = Math.min(i + batch.length, totalCorrect);
+      await prisma.drawing.update({
+        where: { id: drawingId },
+        data: {
+          analysisProgress: progressCount,
+        },
+      });
 
-      if (!contributorColors.has(username)) {
-        contributorColors.set(username, new Map<string, number>());
-      }
-      const userColors = contributorColors.get(username)!;
-      userColors.set(p.hexColor, (userColors.get(p.hexColor) || 0) + 1);
-
-      // Update progress in the database every 5 pixels or at the end
-      if ((i + 1) % 5 === 0 || i + 1 === totalCorrect) {
-        await prisma.drawing.update({
-          where: { id: drawingId },
-          data: {
-            analysisProgress: i + 1,
-          },
-        });
-      }
-
-      // 200ms throttle delay to avoid IP bans/rate limits
-      if (i < totalCorrect - 1) {
+      // 200ms throttle delay between batches to avoid IP bans/rate limits
+      if (i + BATCH_SIZE < totalCorrect) {
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }
